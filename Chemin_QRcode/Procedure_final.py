@@ -4,7 +4,7 @@ import threading
 import time
 from pince import Pince
 from robot import Robot
-from marqueurAruco_V3 import ArucoURController
+from Projet_Electromob.Chemin_QRcode.marqueurAruco_V3 import ArucoURController
 
 # Variables globales pour partager les données
 convoyeur_data = [None] * 2  # Pour capteurs_convoyeur

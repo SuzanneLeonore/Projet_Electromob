@@ -1,34 +1,51 @@
+"""
+robot.py - Gère les mouvements du robot UR5e
+
+Auteur : Alban CASELLA et Suzanne-Léonore GIRARD-JOLLET
+Date : Juillet 2025
+Description : Ce script utilise l'interface RTDE pour piloter les joints et positions TCP du robot UR5e.
+"""
+
 import rtde_receive
 import rtde_control
 import time
-#from Transfo import create_matrice, matrice_to_pose
 import numpy as np
-from pince import Pince
-#import cheminQRcode as QRcode
 
 class Robot :
 
     ROBOT_IP = "10.2.30.60"
 
     def connexion(self):
-        #print('on se connecte')
+        """Connecte le robot aux interfaces de communication au robot"""
         self.robot_r = rtde_receive.RTDEReceiveInterface(self.ROBOT_IP)
         self.robot_c = rtde_control.RTDEControlInterface(self.ROBOT_IP)
 
     def deconnexion(self): 
+        """Deconnecte le robot à l'interface de controle"""
         self.robot_c.disconnect()
-        #print('on se deconnecte')
 
-    def bougerJ(self, pos, speed=0.5, acceleration=0.5):
-        """Permet de bouger le Robot avec les Joints"""
+    def bougerJ(self, position, speed=0.5, acceleration=0.5):
+        """Permet de bouger le Robot avec les Joints
+        
+        Paramètres :
+            position (list): Position joint cible.
+            speed (int | float): Vitesse de déplacement.
+            acceleratio (int | float): Accéleration du mouvement.
+        """
         self.connexion()
-        self.robot_c.moveJ(pos, speed, acceleration)
+        self.robot_c.moveJ(position, speed, acceleration)
         self.deconnexion()
 
-    def bougerL(self, pos, speed = 0.2, acceleration =0.2) :
-        """Permet de bouger le Robot avec la position TCP"""
+    def bougerL(self, position, speed = 0.2, acceleration =0.2) :
+        """Permet de bouger le Robot avec la position TCP
+        
+        Paramètres :
+            position (list): Position TCP cible.
+            speed (int | float): Vitesse de déplacement.
+            acceleration (int | float): Accéleration du mouvement.
+        """
         self.connexion()
-        pose_target = [float(x) for x in pos[:3]] + self.robot_r.getActualTCPPose()[3:]
+        pose_target = [float(x) for x in position[:3]] + self.robot_r.getActualTCPPose()[3:]
         self.robot_c.moveL(pose_target, speed, acceleration)
         self.deconnexion()
 
@@ -49,13 +66,31 @@ class Robot :
         return pose_current
     
     def deplacement_joint(self, indice, angle) :
+        """Définie une nouvelle position joints à partir de la position actuelle
+        
+        Paramètres :
+            indice (int): Indice du joint que l'on veut modifier.
+            angle (float) : Nouvelle valeur que le joint doit prendre.
+        
+        Retourne :
+            list : Nouvelle position de joint.
+        """
         self.connexion()
         q_current=self.robot_r.getActualQ()
         q_current[indice]=angle
         self.deconnexion()
         return q_current
     
-    def move_actual_pose(self, indice, distance  ):
+    def move_actual_pose(self, indice, distance):
+        """Définie une nouvelle position TCP à partir de la position actuelle ou d'une position donnée en argument
+        
+        Paramètres :
+            indice (int): Indice de la coordonnées TCP que l'on veut modifier.
+            distance (float) : Distance que l'on veut ajouter à la coordonnées
+        
+        Retourne :
+            list : Nouvelle position de TCP.
+        """
         self.connexion()
         pose_current = self.robot_r.getActualTCPPose()[:4]
         pose_current[indice] += distance

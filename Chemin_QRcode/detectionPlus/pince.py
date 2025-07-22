@@ -1,4 +1,11 @@
-#import
+"""
+pince.py - Gère les mouvements de la pince 2GF7
+
+Auteur : Alban CASELLA et Suzanne-Léonore GIRARD-JOLLET
+Date : Juillet 2025
+Description : Ce script utilise les sockets pour piloter l'ouverture et la fermeture de la pince.
+"""
+
 import socket
 import time
 
@@ -50,21 +57,3 @@ class Pince :
         """Ouverture de la pince"""
         self._action_pince("lacher")
 
-if __name__=="__main__":
-    from robot import Robot
-    pince= Pince()
-    robot = Robot()
-
-    #test de lacher
-    pince.connexion()
-    pince.lacher()
-
-    # au tour du robot
-    robot.bouger(robot.calcul_pos_relative(dy=0.1))
-
-    # test de prise
-    pince.connexion()
-    pince.prise()
-
-    # au tour du robot
-    robot.bouger(robot.calcul_pos_relative(dy=-0.1))
