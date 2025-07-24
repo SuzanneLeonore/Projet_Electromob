@@ -117,15 +117,3 @@ class Robot :
             #[-0.07224733034242803, -1.9188702742206019, 1.8160276412963867, -1.4937194029437464, -1.4703596274005335, -1.5883601347552698],
             [-1.5707710425006312, -1.9037888685809534, 1.8204197883605957, -1.5371840635882776, -1.4706586042987269, -1.5850275198565882],
         ]
-
-if __name__ == "__main__" :
-    robot = Robot()
-    #robot.bougerJ(robot.pose_init_Q)
-    for i in range(len(robot.joints)) :
-        robot.connexion()
-        print(f"envoie action :{i+1}")
-        robot.robot_c.moveJ(robot.joints[i],0.5, 0.5)
-        time.sleep(5)
-        input("on passe à l'action suivante")
-        robot.deconnexion()
-        

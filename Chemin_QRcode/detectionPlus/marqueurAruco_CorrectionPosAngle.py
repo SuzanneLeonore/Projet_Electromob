@@ -411,12 +411,14 @@ class ArucoURController:
             self.ur5_control.moveL(current_pose_TCP, 0.5,0.5)
             current_pose_Q = self.ur5_receive.getActualQ()
             current_pose_Q[5] +=rpy[2]
-            '''if current_pose_Q[5] < 0 :
+            '''
+            if current_pose_Q[5] < 0 :
                 current_pose_Q[5] +=np.pi
                 current_pose_Q[5] +=rpy[2]
             else :
                 current_pose_Q[5] -=np.pi
-                current_pose_Q[5] -=rpy[2]'''
+                current_pose_Q[5] -=rpy[2]
+            '''
             self.ur5_control.moveJ(current_pose_Q, 0.8,0.8)
             self.pose_history.clear()
             self.deconnexion()
@@ -895,23 +897,12 @@ class ArucoURController:
                             current_marker = marker_ids[i]
                             pose = markers_all_data[current_marker]['pos_marker']
                             poses.append(pose)
-                            rvec_avg = aruco_frames['rvec_avg']
-                            rvec_avg =rvec_avg.tolist()
-                            rpy = self.rotvec_to_rpy(rvec_avg[0],rvec_avg[1],rvec_avg[2])
-                            roll = (rpy[0] + np.pi) % (2 * np.pi) - np.pi
-                            pitch = (rpy[1] + np.pi) % (2 * np.pi) - np.pi
-                            yaw = (rpy[2] + np.pi) % (2 * np.pi) - np.pi
-                            rotvec = self.rpy_to_rotvec (0, np.pi/2, np.pi/2)
-
-                            self.rot = yaw
 
                         cv2.putText(frame, f"Position selon caméra : [{poses[0][0]:.3f}, {poses[0][1]:.3f}, {poses[0][2]:.3f}]",
                                 (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                         
                         cv2.putText(frame, f"Position selon base :{poses[0][0]:.3f}, Axe y :{poses[0][1]:.3f}, Axe z :{poses[0][2]:.3f}",
                                 (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                        #cv2.putText(frame, f"rotvec RX : {rotvec[0]:.3f}, RY :{rotvec[1]:.3f},  RZ :{rotvec[2]:.3f}",
-                                #(10, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                         
                         # Afficher le nombre de marqueurs utilisés
                         cv2.putText(frame, f"Marqueurs: {len(markers_data)}", 
