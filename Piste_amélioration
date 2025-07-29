@@ -1,0 +1,148 @@
+## Rapport de projet - Intégration robot UR5e & Vision par ordinateur
+
+### Objectif du projet
+
+Concevoir un travail pratique (TP) pédagogique pour permettre à des élèves de découvrir l'utilisation d’un bras robotisé UR5e, en le combinant à de la vision par ordinateur.
+
+Le projet a été réalisé selon deux approches :
+
+**Approche 1 – Mouvements programmés en dur**:
+
+Le robot suit une séquence de positions préprogrammées, sans perception visuelle.
+Permet d’illustrer les commandes de trajectoire, les déplacements en espace cartésien et les mouvements répétables.
+
+**Approche 2 – Mouvements intelligents via détection ArUco** :
+
+Utilisation d’une caméra RealSense pour détecter des marqueurs ArUco/Charuco.
+Le robot adapte ses mouvements en fonction de la position de la cible détectée.
+Cette approche introduit la notion de robotique adaptative, perception, et calibration hand-eye.
+
+---
+### Étapes principales réalisées - Approche 1
+
+1. **Réalisation de la calibration** (`calibration.py`)
+
+   * Déplacement manuelle du robot sur le convoyeur, la boîte de rangemant et l'injecteur.
+   * Enregistrement des positions des différents élements.
+   * Création d'un repère associé.
+   * Sauvegarde des données dans un fichier JSON.
+
+2. **Lancement du mouvement** (`procedure_finale.py`)
+
+   * Ecoute des capteurs à levier.
+   * Lancement de la suite de mouvement lorsque le capteur du convoyeur est enclenché.
+   * Enregistrement de la place de l'emplacement libre lorsque le capteur du convoyeur est enclenché.
+   * Déroulement suite de mouvement. 
+
+### Étapes principales réalisées - Approche 2
+
+1. **Capture automatique de données de calibration** (`calibration_auto.py`)
+
+   * Déplacement du robot autour d'un objet cible en suivant deux arcs (XZ et XY).
+   * Détection d'une planche ArUco à l'aide de la caméra.
+   * Sauvegarde des transformations robot/base et caméra/objet dans un fichier YAML.
+   * Ne fonctionne pas.
+
+2. **Capture manuelle de données** (`calibration_hand_eye_data.py`)
+
+   * Interface interactive pour capturer, supprimer ou valider des poses.
+   * Affichage temps réel du TCP et du statut de détection.
+   * Exportation des données de calibration.
+
+3. **Prise d’images manuelle** (`prisePhoto.py`)
+
+   * Affichage du flux caméra avec détection.
+   * Sauvegarde d'images sur commande utilisateur avec indexation.
+
+4. **Détection ArUco/Charuco personnalisée**
+
+   * Utilisation d’un détecteur `ArucoDetector` avec calibration intrinsèque.
+   * Affichage de la pose détectée (axes XYZ).
+
+5. **Lancement du mouvement** (`procedure_finale.py`)
+
+   * Ecoute des capteurs à levier.
+   * Lancement de la suite de mouvement lorsque le capteur du convoyeur est enclenché.
+   * Enregistrement de la place de l'emplacement libre lorsque le capteur du convoyeur est enclenché.
+   * Déroulement suite de mouvement. 
+---
+
+### Points bloquants rencontrés
+
+1. **Stabilité de détection Charuco**
+
+   * Sensibilité forte à l'éclairage et à l'angle de vue.
+   * Échecs fréquents de détection si la planche est partiellement visible.
+
+2. **Latence de synchronisation robot/caméra**
+
+   * Le temps entre la capture de la pose robot et celle de l'image n’est pas nul.
+   * Des erreurs dans les mesures de calibration peuvent apparaître.
+
+3. **Précision de la calibration hand-eye**
+
+   * Résultats sensibles à la diversité et au nombre d’échantillons.
+   * Résidus élevés si les poses ne couvrent pas assez de rotations.
+
+4. **Dépendance aux paramètres ArUco**
+
+   * Mauvais réglage de `charuco_params` peut dégrader la détection.
+   * Utilisation d’intrinsèques approximatifs donne des erreurs de projection.
+
+5. **Intégration robot RealTime via RTDE**
+
+   * Risques de perte de connexion.
+   * L’appel à `getActualTCPPose` peut être légèrement bruyant.
+
+---
+
+### Pistes d'amélioration
+
+1. **Optimiser l’éclairage**
+
+   * Utiliser un anneau LED ou des sources diffusées pour éclairer la planche uniformément.
+   * 
+   * Ajouter un filtre IR si nécessaire.
+
+2. **Améliorer la stratégie de prise de vue**
+
+   * Automatiser une grille 3D de prises (non seulement sur deux plans).
+   * Refaire le script de calibration automatique pour obtenir une calibration répétable et autonome.
+
+3. **Filtrer ou lisser les poses robot**
+
+   * Moyennage ou filtre de Kalman sur `getActualTCPPose` pour réduire le bruit.
+
+4. **Valider les poses détectées**
+
+   * Calculer un score de détection ou la covariance de la pose.
+   * Ne sauvegarder que les poses bien détectées (crée un seuil de confiance).
+
+5. **Ajout de visualisation 3D des poses collectées**
+
+   * Affichage avec `matplotlib` ou `open3d` pour vérifier la qualité de l’échantillonnage spatial.
+
+6. **Utilisation d’une horloge synchronisée robot/caméra**
+
+   * Pour enregistrer précisément les timestamps et compenser le délai.
+
+7. **Automatiser la calibration finale**
+
+   * Enchaîner détection + calibration + test sur des scènes connues avec validation automatique.
+
+---
+
+### Conclusion
+
+Le système mis en place constitue une base pédagogique solide pour un TP robotique.
+Il permet aux élèves de :
+
+comprendre les bases du contrôle d’un bras UR5e,
+
+manipuler la calibration entre caméra et robot,
+
+explorer l’interaction vision-robotique via ArUco/Charuco.
+
+L'approche par mouvement en dur offre un socle simple de manipulation, tandis que l'approche par vision permet une introduction au pilotage intelligent.
+
+Des améliorations peuvent encore renforcer la robustesse du système en vue d'une exploitation en conditions réelles ou pour des TP avancés.
