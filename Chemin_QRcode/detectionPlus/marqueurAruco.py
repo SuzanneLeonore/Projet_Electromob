@@ -81,6 +81,29 @@ class ArucoURController:
         self.ur5_control.disconnect()
 
     def update_cam_to_base_transform(self):
+        """
+        Met à jour la transformation de la caméra vers la base du robot.
+
+        Cette méthode calcule la matrice de transformation homogène entre la caméra
+        et la base du robot, en combinant la position actuelle du TCP (Tool Center Point)
+        avec la transformation prédéterminée entre la caméra et la bride de l’outil,
+        lue depuis un fichier YAML.
+
+        Étapes :
+            1. Récupère la pose actuelle du TCP du robot (position + orientation en rotation de Rodrigues).
+            2. Construit une matrice de transformation homogène du TCP vers la base.
+            3. Lit la matrice de transformation de la caméra à la bride depuis un fichier YAML.
+            4. Calcule la transformation finale de la caméra à la base du robot.
+
+        Attributs modifiés :
+            self.T_cam_to_base (np.ndarray): Matrice 4x4 représentant la transformation de la caméra à la base.
+
+        Fichier requis :
+            detectionPlus/hand_eye.yaml : Doit contenir une clé 'T_cam_to_flange' correspondant à une matrice 4x4.
+
+        Exceptions :
+            Lève une exception si le fichier YAML est manquant ou mal formé.
+        """
         tcp = self.ur5_receive.getActualTCPPose()
         T_tcp_base = np.eye(4)
         T_tcp_base[:3,3] = tcp[:3]
@@ -92,10 +115,48 @@ class ArucoURController:
 
     def detect_aruco_markers(self, strict = False):
         """
-        Detecte les marqueurs ArUco et renvoie :
-        - und (BGR)         : image non distordue + axes + cercles
-        - proj_center (xy)  : centre projeté moyen (ou None)
-        - markers_data      : liste de dicts {id, position, axes, rvec, rpy, ...} ou None
+        Détecte les marqueurs ArUco dans une image capturée par la caméra RealSense.
+
+        Deux passes de détection sont effectuées :
+        - Une première pour repérer rapidement les marqueurs et calculer un centre projeté moyen.
+        - Une seconde pour une estimation précise de la pose de chaque marqueur avec solvePnP,
+            affinée par CLAHE et stabilisée via un historique temporel.
+
+        Si aucun marqueur n'est détecté, le comportement dépend du paramètre `strict` :
+        - Si `strict=True` : retourne None pour les poses.
+        - Si `strict=False` : retourne la dernière détection connue (si disponible).
+
+        Returns:
+            und (np.ndarray): Image couleur (BGR) non distordue avec les marqueurs, axes et cercles dessinés.
+            proj_center (tuple[int, int] or None): Centre projeté moyen des marqueurs (x, y en pixels) ou None si non détecté.
+            markers_data (list[dict] or None): Liste de dictionnaires contenant les informations de pose pour chaque marqueur :
+                - 'id' (int): Identifiant du marqueur ArUco.
+                - 'position' (np.ndarray): Position 3D du marqueur dans le repère de la base robot.
+                - 'pos_marker' (list[float]): Position du marqueur dans le repère caméra.
+                - 'rvec' (np.ndarray): Vecteur de rotation (Rodrigues).
+                - 'rpy' (tuple[float, float, float]): Orientation (roll, pitch, yaw) en radians.
+                - 'axes' (dict[str, np.ndarray]): Axes du repère du marqueur projetés en base robot ('x', 'y', 'z').
+                - 'timestamp' (float): Horodatage de la détection (temps système).
+
+        Args:
+            strict (bool, optional): Si True, ne retourne aucun marqueur si la détection échoue.
+                                        Si False, conserve les données de la dernière détection valide.
+                                        Défaut : False.
+
+        Modifie :
+            self.last_avg_t (np.ndarray): Dernière position moyenne estimée (repère caméra).
+            self.center_history (deque): Historique des centres projetés pour lissage.
+            self.pose_history (dict): Historique des poses par ID pour filtrage temporel.
+            self.last_frame_markers (list): Derniers marqueurs détectés.
+
+        Dépendances :
+            - Caméra RealSense initialisée avec `self.pipeline` et `self.align`.
+            - Matrice de calibration `self.camera_matrix` et distorsion `self.dist_coeffs`.
+            - Transformée `self.T_cam_to_base` pour conversion en base robot.
+            - Taille des marqueurs définie par `self.marker_size`.
+
+        Exceptions:
+            Ne lève pas d’exception explicitement, mais retourne des None en cas d'échec d'acquisition ou de détection.
         """
         # 1) Acquisition RealSense
         frames       = self.pipeline.wait_for_frames()
@@ -234,8 +295,43 @@ class ArucoURController:
 
     def compute_weighted_aruco_reference_frames(self, markers_data):
         """
-        Calcule un repère de référence à partir des marqueurs détectés
-        en tenant compte de leur fiabilité relative
+        Calcule un repère de référence global à partir de plusieurs marqueurs ArUco détectés,
+        en moyennant leur position et leurs axes, puis en orthonormalisant les vecteurs.
+
+        Ce repère peut servir de système de coordonnées stable pour une tâche de robotique.
+        Une rotation de 180° autour de l'axe Z est appliquée pour aligner le repère avec
+        le système robot (option typique en cas de caméra montée tête en bas).
+
+        Args:
+            markers_data (list[dict]): Liste de dictionnaires contenant les données de pose
+                pour chaque marqueur détecté. Chaque dictionnaire doit inclure :
+                - 'id' (int): Identifiant du marqueur.
+                - 'position' (np.ndarray): Position 3D du marqueur dans la base robot.
+                - 'pos_marker' (list[float]): Position du marqueur dans le repère caméra.
+                - 'axes' (dict): Repère local du marqueur (x, y, z) dans la base robot.
+                - 'rvec' (np.ndarray): Vecteur de rotation (Rodrigues).
+                - 'rpy' (tuple): Angles roll-pitch-yaw.
+
+        Returns:
+            dict or None: Dictionnaire représentant le repère de référence global, ou None
+            si aucun marqueur valide n’est fourni. Le dictionnaire contient :
+                - 'id' (int): ID du premier marqueur utilisé comme référence.
+                - 'pos_marker' (list[float]): Position d'origine du marqueur de référence.
+                - 'position' (np.ndarray): Position moyenne 3D (dans la base robot).
+                - 'axes' (dict): Repère orthonormé transformé ('x', 'y', 'z').
+                - 'original_axes' (dict): Repère avant transformation (non corrigé).
+                - 'rvec_avg' (np.ndarray): Moyenne des rotations (Rodrigues).
+                - 'all_markers' (dict): Données brutes de chaque marqueur, indexées par ID.
+
+        Notes:
+            - Tous les marqueurs sont traités avec un poids égal (pondération possible à ajouter).
+            - Le repère est redressé via une SVD moyenne des matrices de rotation.
+            - Le vecteur Z est pris tel quel, Y est redressé pour être perpendiculaire à Z,
+            et X est obtenu par produit vectoriel.
+            - L'orientation est corrigée pour aligner avec un repère robotique standard.
+
+        See Also:
+            `scipy.spatial.transform.Rotation` pour les conversions entre rvec et matrice de rotation.
         """
         if not markers_data or len(markers_data) == 0:
             return None
@@ -259,7 +355,6 @@ class ArucoURController:
                 'rvec' : marker['rvec'],
                 'rpy' :marker['rpy']
             }
-            
         
         else:
             # Fallback : moyennes simples
@@ -322,21 +417,73 @@ class ArucoURController:
             'all_markers': all_markers_axes  # Ajout de tous les axes des marqueurs
         }
 
-    def rpy_to_rotvec(self,roll, pitch, yaw):
-        # Conversion RPY → vecteur de rotation
+    def rpy_to_rotvec(self, roll, pitch, yaw):
+        """
+        Convertit des angles RPY (roll, pitch, yaw) en vecteur de rotation (Rodrigues).
+
+        Args:
+            roll (float): Angle de roulis (rotation autour de l'axe X), en radians.
+            pitch (float): Angle de tangage (rotation autour de Y), en radians.
+            yaw (float): Angle de lacet (rotation autour de Z), en radians.
+
+        Returns:
+            np.ndarray: Vecteur de rotation (shape: (3,)) représentant l'orientation.
+        """
         rot = R.from_euler('xyz', [roll, pitch, yaw])
         rotvec = rot.as_rotvec()
         return rotvec
 
-    def rotvec_to_rpy(self,rx, ry, rz):
-        # Conversion vecteur de rotation → RPYdegrees = True 
+    def rotvec_to_rpy(self, rx, ry, rz):
+        """
+        Convertit un vecteur de rotation (Rodrigues) en angles RPY (roll, pitch, yaw).
+
+        Args:
+            rx (float): Composante X du vecteur de rotation.
+            ry (float): Composante Y du vecteur de rotation.
+            rz (float): Composante Z du vecteur de rotation.
+
+        Returns:
+            tuple[float, float, float]: Angles roll, pitch, yaw (en radians).
+        """
         rot = R.from_rotvec([rx, ry, rz])
-        rpy = rot.as_euler('xyz')
-        rpy_1 = rot.as_euler('xyz', degrees = True)
-        #print(rpy_1)
+        rpy = rot.as_euler('xyz')  # en radians
         return rpy
-    
+        
     def rotation_rvec(self, liste) :
+        """
+        Calcule et applique une orientation moyenne à l'outil du robot à partir d'un
+        sous-ensemble de marqueurs ArUco spécifiés.
+
+        Cette fonction :
+        1. Met à jour la transformation caméra → base robot.
+        2. Détecte les marqueurs ArUco visibles.
+        3. Filtre ceux dont l'ID est dans `liste`.
+        4. Moyenne leurs vecteurs de rotation (Rodrigues) via SVD.
+        5. Convertit le résultat en RPY puis génère un vecteur de rotation ajusté.
+        6. Applique une pose TCP avec cette orientation au robot UR5 en utilisant un mouvement linéaire.
+
+        Un comportement particulier est défini si `liste == [24, 25]` ou `[25, 24]` :
+        - Une orientation prédéfinie (π/2 autour de Y et Z) est utilisée à la place de celle estimée.
+        - Le robot est déplacé avec cette orientation, et l'historique de pose est réinitialisé.
+
+        Args:
+            liste (list[int]): Liste d'identifiants de marqueurs ArUco à utiliser pour le calcul
+                de l'orientation moyenne. Typiquement [24, 25] ou autres.
+
+        Effects:
+            - Le robot est connecté, déplacé vers une nouvelle orientation TCP, puis déconnecté.
+            - L'historique `self.pose_history` est vidé après chaque mouvement.
+            - Un mouvement linéaire (`moveL`) est effectué via `self.ur5_control`.
+
+        Raises:
+            Aucun sauf si les appels aux sous-systèmes échouent silencieusement (non gérés ici).
+
+        Dependencies:
+            - `detect_aruco_markers()` pour obtenir les poses des marqueurs.
+            - `rotvec_to_rpy()` et `rpy_to_rotvec()` pour les conversions de rotation.
+            - `ur5_receive` et `ur5_control` pour obtenir la pose TCP et commander le robot.
+            - `connexion()` et `deconnexion()` pour gérer la session robot.
+        """
         self.update_cam_to_base_transform()
         _, _, markers_data = self.detect_aruco_markers()
         selected_markers = [m for m in markers_data if m['id'] in liste]
@@ -372,6 +519,35 @@ class ArucoURController:
             self.deconnexion()
     
     def rotation(self, liste) :
+        """
+        Calcule une orientation moyenne à partir des marqueurs ArUco spécifiés, puis
+        oriente le robot UR5 en conséquence en utilisant des mouvements linéaires (moveL)
+        et articulaires (moveJ).
+
+        Le comportement dépend de la composition de `liste` :
+        - Si `liste == [24, 25]` (ou l’inverse), une rotation fixe de (0, π/2, π/2) est utilisée.
+        - Si `liste == [0]`, la rotation est fixée à (π, 0, 0) en RPY avec un ajustement final en q[5].
+        - Sinon, même rotation de base (π, 0, 0) mais ajustement conditionnel selon q[5].
+
+        Args:
+            liste (list[int]): Liste des IDs des marqueurs ArUco à prendre en compte pour
+                calculer la rotation moyenne.
+
+        Returns:
+            None
+
+        Effets de bord :
+            - Connecte et déconnecte le robot UR5.
+            - Déplace le robot selon l’orientation calculée ou imposée.
+            - Vide l'historique de poses (`self.pose_history`) après mouvement.
+            - Fait appel à `detect_aruco_markers()` et `update_cam_to_base_transform()`.
+
+        Notes :
+            - La rotation moyenne est calculée via SVD sur les matrices de rotation issues
+            des vecteurs de rotation (Rodrigues) des marqueurs.
+            - L’orientation est injectée dans les derniers 3 éléments de la pose TCP.
+            - `current_pose_Q[5]` (axe 6) est ajusté pour corriger l'orientation finale du robot.
+        """
         self.update_cam_to_base_transform()
         _, _, markers_data = self.detect_aruco_markers()
         selected_markers = [m for m in markers_data if m['id'] in liste]
@@ -443,6 +619,33 @@ class ArucoURController:
             self.deconnexion()
 
     def rotation_yaw(self, liste) :
+        """
+        Calcule l'angle de lacet (yaw) moyen à partir des marqueurs ArUco spécifiés, puis
+        applique une rotation autour de l'axe Z du robot en modifiant la 6e articulation.
+
+        Cette méthode ne modifie que la composante yaw (rotation autour de Z) en ajustant
+        l’angle `q[5]` de la configuration articulaire du robot (UR5).
+
+        Args:
+            liste (list[int]): Liste d’identifiants des marqueurs ArUco à considérer
+                pour le calcul de la rotation moyenne.
+
+        Returns:
+            None
+
+        Effets de bord :
+            - Connecte au robot UR5.
+            - Modifie l’angle `q[5]` en l’incrémentant avec la composante yaw estimée.
+            - Envoie une commande de mouvement articulaire (moveJ).
+            - Vide l’historique `self.pose_history`.
+            - Déconnecte du robot.
+
+        Notes :
+            - Le yaw est extrait à partir de la moyenne des matrices de rotation calculées
+            sur les vecteurs de rotation (Rodrigues) des marqueurs sélectionnés.
+            - Le système de coordonnées utilisé suppose un repère aligné avec le robot.
+            - Aucun filtrage de validité des marqueurs n’est effectué ici.
+        """
         self.update_cam_to_base_transform()
         _, _, markers_data = self.detect_aruco_markers()
         selected_markers = [m for m in markers_data if m['id'] in liste]
@@ -462,44 +665,33 @@ class ArucoURController:
         self.ur5_control.moveJ(current_pose_Q, 0.5,0.5)
         self.pose_history.clear()
         self.deconnexion()
-    
-    def balisation (self, liste, indice, angle, joint=1) :
-        print("on est dans la fonction")
-        self.update_cam_to_base_transform()
-        marker_ids = []
-
-        while True:
-            self.pose_history.clear()
-            _, markers_data = self.detect_aruco_markers(strict=True)
-
-            if markers_data:
-                aruco_frames = self.compute_weighted_aruco_reference_frames(markers_data)
-                marker_ids = list(aruco_frames['all_markers'].keys())
-                print(marker_ids)
-                #liste_inverse = liste[::-1]
-                
-            if set(liste).issubset(marker_ids):
-                break
-            if joint == 1 :
-                self.connexion()
-                print("joint")
-                pose_current = self.ur5_receive.getActualQ()
-                pose_current[indice] += angle
-                self.ur5_control.moveJ(pose_current, 0.8, 0.8)
-                self.pose_history.clear()
-                self.deconnexion()
-            if joint == 0 :
-                self.connexion()
-                print("TCP")
-                pose_current = self.ur5_receive.getActualTCPPose()
-                pose_current[indice] += angle
-                self.ur5_control.moveL(pose_current, 0.5, 0.5)
-                print(pose_current)
-                self.pose_history.clear()
-                self.deconnexion()
-            self.pose_history.clear()
 
     def deplacementPose(self, liste, offset) :
+        """
+        Déplace le robot vers une position cible estimée à partir de marqueurs ArUco,
+        avec un décalage appliqué (offset) à la position moyenne.
+
+        Cette méthode :
+        - Calcule la position moyenne des marqueurs spécifiés.
+        - Applique un offset (translation).
+        - Déplace le TCP du robot vers cette nouvelle position par interpolation linéaire.
+
+        Args:
+            liste (list[int]): Liste des IDs de marqueurs ArUco à considérer.
+            offset (np.ndarray): Vecteur de décalage (shape: (3,)) à appliquer à la position cible.
+
+        Returns:
+            None
+
+        Effets de bord :
+            - Connecte et déconnecte le robot.
+            - Envoie une commande `moveL` vers une nouvelle position TCP.
+            - Vide l’historique de poses `self.pose_history`.
+
+        Notes :
+            - Utilise `compute_weighted_aruco_reference_frames` pour estimer les poses.
+            - La rotation TCP reste inchangée.
+        """
         self.pose_history.clear()
         
         self.update_cam_to_base_transform()
@@ -522,7 +714,36 @@ class ArucoURController:
         self.deconnexion()
 
     def balisation (self, liste, indice, angle, joint=1) :
-        print("on est dans la fonction")
+        """
+        Effectue un mouvement par étapes jusqu'à ce que tous les marqueurs de la liste soient détectés.
+
+        Cette méthode :
+        - Déplace le robot jusqu’à détecter tous les marqueurs ArUco spécifiés.
+        - Répète un mouvement incrémental (soit articulaire, soit TCP) à chaque itération.
+        - Utilise la détection stricte de `detect_aruco_markers(strict=True)`.
+
+        Args:
+            liste (list[int]): Liste des IDs de marqueurs ArUco à détecter.
+            indice (int): Index de la coordonnée à modifier (0-5 pour TCP, 0-5 pour Q).
+            angle (float): Incrément de déplacement (radian ou mètre selon le mode).
+            joint (int, optional): 
+                Mode de déplacement : 
+                - 1 = mouvement articulaire (moveJ).
+                - 0 = mouvement linéaire du TCP (moveL).
+                Par défaut 1.
+
+        Returns:
+            None
+
+        Effets de bord :
+            - Effectue plusieurs connexions/déconnexions robot.
+            - Envoie des commandes de mouvement à chaque itération.
+            - Vide `self.pose_history` à chaque boucle.
+
+        Notes :
+            - La boucle est bloquante jusqu'à détection complète des marqueurs.
+            - Aucun timeout ou sécurité n’est implémenté.
+        """
         self.update_cam_to_base_transform()
         marker_ids = []
 
@@ -558,6 +779,23 @@ class ArucoURController:
             self.pose_history.clear()
 
     def doing_moveL(self, target, speed, acceleration):
+        """
+        Lance un déplacement linéaire (`moveL`) du robot vers la cible spécifiée
+        dans un thread séparé, puis attend la fin de ce déplacement.
+
+        Args:
+            target (list or np.ndarray): Pose cible TCP (6 éléments : position + orientation).
+            speed (float): Vitesse de déplacement.
+            acceleration (float): Accélération du mouvement.
+
+        Returns:
+            None
+
+        Note:
+            - La fonction utilise un thread pour lancer la commande, mais attend
+            immédiatement sa fin avec `join()`, ce qui bloque l'exécution jusqu'à
+            la fin du mouvement.
+        """
         move_thread = threading.Thread(
             target=self.ur5_control.moveL,
             args=(target, speed, acceleration)
